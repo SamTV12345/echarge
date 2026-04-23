@@ -1,0 +1,5 @@
+*.exe
+charge-map
+.idea
+.claude
+Claude.md
