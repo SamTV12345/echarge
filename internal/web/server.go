@@ -16,15 +16,18 @@ import (
 	"time"
 
 	"echarge/internal/data"
+	"echarge/internal/route"
 	"echarge/internal/web/templates"
 )
 
 // Server is the HTTP application. Construct it directly; the zero value is
 // NOT usable because Store must be set. JSBundle should hold the esbuild
 // output produced once at startup by echarge/internal/build.BuildJS.
+// Planner is optional — when nil the /api/route endpoint returns 503.
 type Server struct {
 	Store    *data.Store
 	JSBundle []byte
+	Planner  *route.Planner
 }
 
 // Handler returns the fully wired ServeMux, including logging and panic
@@ -42,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/betreiber", s.handleBetreiber)
 	mux.HandleFunc("GET /api/suggest", s.handleSuggest)
 	mux.HandleFunc("GET /api/geocode", s.handleGeocode)
+	mux.HandleFunc("GET /api/route", s.handleRoute)
 
 	return withMiddleware(mux)
 }
@@ -183,6 +187,103 @@ func (s *Server) handleBetreiber(w http.ResponseWriter, r *http.Request) {
 		names = []string{}
 	}
 	writeJSON(w, http.StatusOK, names)
+}
+
+func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
+	if s.Planner == nil {
+		http.Error(w, "route planning not configured", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+
+	start, err := parseLatLng(q.Get("start"))
+	if err != nil {
+		http.Error(w, "invalid start: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	end, err := parseLatLng(q.Get("end"))
+	if err != nil {
+		http.Error(w, "invalid end: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	rangeKm, err := parsePositiveFloat(q.Get("range"), 300)
+	if err != nil {
+		http.Error(w, "invalid range: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	soc, err := parsePositiveFloat(q.Get("soc"), 80)
+	if err != nil || soc > 100 {
+		http.Error(w, "invalid soc (0-100 expected)", http.StatusBadRequest)
+		return
+	}
+
+	req := route.Request{
+		Start:      start,
+		End:        end,
+		RangeKm:    rangeKm,
+		SocPercent: soc,
+		Tiers:      splitCSV(q.Get("tiers")),
+		Plugs:      splitCSV(q.Get("plugs")),
+		Status:     splitCSV(q.Get("status")),
+	}
+	// Match the /api/stations convention for tier codes.
+	for i, t := range req.Tiers {
+		req.Tiers[i] = strings.ToLower(t)
+	}
+
+	plan, err := s.Planner.Plan(r.Context(), req)
+	if err != nil {
+		if errors.Is(err, route.ErrNoRoute) {
+			http.Error(w, "no route between the given points", http.StatusNotFound)
+			return
+		}
+		log.Printf("route: planning failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// parseLatLng parses "lat,lng" with at least one decimal place.
+func parseLatLng(raw string) ([2]float64, error) {
+	var zero [2]float64
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return zero, errors.New("empty")
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) != 2 {
+		return zero, errors.New("expected \"lat,lng\"")
+	}
+	lat, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return zero, errors.New("non-numeric latitude")
+	}
+	lng, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return zero, errors.New("non-numeric longitude")
+	}
+	if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
+		return zero, errors.New("out of range")
+	}
+	return [2]float64{lat, lng}, nil
+}
+
+// parsePositiveFloat returns the parsed float or dflt if raw is empty.
+// Returns an error if raw is non-numeric or not strictly positive.
+func parsePositiveFloat(raw string, dflt float64) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return dflt, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, errors.New("non-numeric")
+	}
+	if v <= 0 {
+		return 0, errors.New("must be > 0")
+	}
+	return v, nil
 }
 
 func (s *Server) handleGeocode(w http.ResponseWriter, r *http.Request) {

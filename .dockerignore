@@ -1,0 +1,34 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Editors / IDEs
+.idea
+.vscode
+*.swp
+*.swo
+
+# Claude / dev tooling scratch
+.claude
+memory
+CLAUDE.md
+charge-map
+
+# Local build artifacts
+echarge
+echarge.exe
+/out
+*.log
+
+# Screenshots and temp files we occasionally drop in the repo root
+img*.png
+/tmp*
+
+# Go
+*.test
+*.prof
+
+# Node (not used, but defensive)
+node_modules
+.npm

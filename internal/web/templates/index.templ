@@ -85,13 +85,19 @@ templ Index(props IndexProps) {
 								<div class="route-stop-dot"></div>
 								<div class="route-stop-line"></div>
 							</div>
-							<input id="route-start" class="route-input" type="text" placeholder="Startort" value="Berlin"/>
+							<div class="route-input-wrap">
+									<input id="route-start" class="route-input" type="text" placeholder="Startort" value="Berlin" autocomplete="off" spellcheck="false"/>
+									<div id="route-start-suggest" class="autocomplete" style="display:none"></div>
+								</div>
 						</div>
 						<div class="route-stop">
 							<div class="route-stop-marker" data-type="end">
 								<div class="route-stop-dot"></div>
 							</div>
-							<input id="route-end" class="route-input" type="text" placeholder="Ziel" value="München"/>
+							<div class="route-input-wrap">
+									<input id="route-end" class="route-input" type="text" placeholder="Ziel" value="München" autocomplete="off" spellcheck="false"/>
+									<div id="route-end-suggest" class="autocomplete" style="display:none"></div>
+								</div>
 						</div>
 					</div>
 					<div class="route-options">
@@ -104,8 +110,26 @@ templ Index(props IndexProps) {
 							<div class="route-field-label">Ladestand</div>
 							<div class="route-field-value"><span id="soc-value">85%</span></div>
 							<input id="soc-slider" class="route-slider" type="range" min="20" max="100" step="5" value="85"/>
+							</div>
 						</div>
-					</div>
+						<div class="filter-group">
+							<div class="filter-label">Stecker-Typ entlang der Route</div>
+							<div class="chips">
+								<button class="chip" data-route-plug="CCS">CCS</button>
+								<button class="chip" data-route-plug="CHAdeMO">CHAdeMO</button>
+								<button class="chip" data-route-plug="Typ 2">Typ 2</button>
+								<button class="chip" data-route-plug="Schuko">Schuko</button>
+							</div>
+						</div>
+						<div class="filter-group">
+							<div class="filter-label">Leistungsklasse entlang der Route</div>
+							<div class="chips">
+								<button class="chip active" data-route-tier="ac"><span class="dot"></span>AC</button>
+								<button class="chip active" data-route-tier="dc"><span class="dot"></span>DC 50 kW</button>
+								<button class="chip active" data-route-tier="hpc"><span class="dot"></span>HPC 150 kW</button>
+								<button class="chip active" data-route-tier="ultra"><span class="dot"></span>Ultra 300+</button>
+							</div>
+						</div>
 					<button id="plan-btn" class="btn-primary">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="3"/></svg>
 						Route mit Ladestopps berechnen
@@ -124,6 +148,10 @@ templ Index(props IndexProps) {
 			</aside>
 			<!-- ============== MAP ============== -->
 			<div class="map-wrap">
+				<button id="sidebar-toggle" class="sidebar-toggle" aria-label="Menü öffnen" type="button">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+				</button>
+				<div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 				<div id="map"></div>
 				<!-- Detail panel (slides in from right) -->
 				<div id="detail-panel" class="detail-panel"></div>

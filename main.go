@@ -13,12 +13,16 @@ import (
 
 	"echarge/internal/build"
 	"echarge/internal/data"
+	"echarge/internal/osrm"
+	"echarge/internal/route"
 	"echarge/internal/web"
 )
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	srcDir := flag.String("src", "web/src", "TypeScript source directory")
+	osrmURL := flag.String("osrm", "https://router.project-osrm.org",
+		"OSRM base URL for route planning (set empty to disable)")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -38,6 +42,13 @@ func main() {
 	log.Printf("startup: bundle ready (%d bytes)", len(jsBundle))
 
 	srv := &web.Server{Store: store, JSBundle: jsBundle}
+	if *osrmURL != "" {
+		srv.Planner = &route.Planner{
+			Store: store,
+			OSRM:  osrm.New(*osrmURL, nil),
+		}
+		log.Printf("startup: route planner enabled (OSRM %s)", *osrmURL)
+	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

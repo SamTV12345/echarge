@@ -130,6 +130,16 @@ function operatorShort(full: string): string {
   return cleaned.split(/\s+/)[0].slice(0, 18);
 }
 
+// Rough 10→80 % charging time based on the station's rated power. Per-tier
+// constants match typical real-world values; the car's acceptance curve
+// dominates reality, but this is close enough for trip planning.
+function chargeMinutes(kw: number): number {
+  if (kw >= 300) return 15;
+  if (kw >= 150) return 22;
+  if (kw >= 50) return 35;
+  return 90;
+}
+
 function availabilityOf(status?: string): Availability {
   if (status && /außer|nicht|gekündigt|gestört/i.test(status)) return "offline";
   if (status === "In Betrieb") return "available";
@@ -153,6 +163,11 @@ document.addEventListener("DOMContentLoaded", () => {
     tiers: new Set<string>(["ac", "dc", "hpc", "ultra"]),
     plugs: new Set<string>(),
     availability: new Set<string>(),
+    // Route-tab-specific filters (independent of the search-tab chips).
+    // Start with ALL tiers active so Typ-2 / Schuko plug filters still find
+    // candidates (most Typ-2 chargers are AC, not HPC).
+    routeTiers: new Set<string>(["ac", "dc", "hpc", "ultra"]),
+    routePlugs: new Set<string>(),
     selectedId: null as number | null,
     acFocused: -1 as number,
   };
@@ -182,6 +197,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const tierChips = document.querySelectorAll<HTMLElement>(".chip[data-tier]");
   const plugChips = document.querySelectorAll<HTMLElement>(".chip[data-plug]");
   const availChips = document.querySelectorAll<HTMLElement>(".chip[data-avail]");
+  const routePlugChips = document.querySelectorAll<HTMLElement>(
+    ".chip[data-route-plug]",
+  );
+  const routeTierChips = document.querySelectorAll<HTMLElement>(
+    ".chip[data-route-tier]",
+  );
   const resultsEl = $<HTMLDivElement>("#results");
   const resultsCount = $<HTMLElement>("#results-count");
   const stationCountEl = $<HTMLElement>("#station-count");
@@ -190,6 +211,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const panels = document.querySelectorAll<HTMLElement>(".panel");
   const routeStart = $<HTMLInputElement>("#route-start");
   const routeEnd = $<HTMLInputElement>("#route-end");
+  const sidebarEl = document.querySelector<HTMLElement>(".sidebar");
+  const sidebarToggle = document.getElementById("sidebar-toggle");
+  const sidebarBackdrop = document.getElementById("sidebar-backdrop");
   const rangeSlider = $<HTMLInputElement>("#range-slider");
   const rangeValue = $<HTMLElement>("#range-value");
   const socSlider = $<HTMLInputElement>("#soc-slider");
@@ -212,11 +236,19 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   L.control.zoom({ position: "topright" }).addTo(map);
 
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: "© OpenStreetMap · © CARTO",
-    subdomains: "abcd",
-    maxZoom: 19,
-  }).addTo(map);
+  // Stadia "alidade_smooth_dark" — dark theme with prominent motorways and
+  // road labels. Free tier covers localhost + reasonable production traffic;
+  // if you deploy to a non-local domain, register a free API key at
+  // stadiamaps.com and append it as ?api_key=... below.
+  L.tileLayer(
+    "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png",
+    {
+      attribution:
+        '© <a href="https://stadiamaps.com/" target="_blank">Stadia Maps</a> · © <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+      maxZoom: 20,
+      detectRetina: true,
+    },
+  ).addTo(map);
 
   // ---------- Marker icons ----------
   const boltSVG =
@@ -457,6 +489,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (flyTo) {
+      // On mobile the sidebar covers the map; slide it away so the user
+      // actually sees where we just panned to.
+      if (isMobile()) closeSidebar();
       if (opts.preserveZoom) {
         // Clicking a route stop: keep the route-overview zoom so the whole
         // polyline stays in frame. Just pan.
@@ -698,8 +733,10 @@ document.addEventListener("DOMContentLoaded", () => {
       x.style.display = x.dataset.panel === t ? "" : "none";
     });
     const resultsWrap = document.getElementById("results-wrap");
+    const resultsList = document.getElementById("results");
     const routeSummaryWrap = document.getElementById("route-summary-wrap");
     if (resultsWrap) resultsWrap.style.display = t === "search" ? "" : "none";
+    if (resultsList) resultsList.style.display = t === "search" ? "" : "none";
     if (routeSummaryWrap)
       routeSummaryWrap.style.display = t === "route" ? "" : "none";
   }
@@ -731,124 +768,87 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function distanceKm(a: [number, number], b: [number, number]): number {
-    const R = 6371;
-    const dLat = ((b[0] - a[0]) * Math.PI) / 180;
-    const dLon = ((b[1] - a[1]) * Math.PI) / 180;
-    const h =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos((a[0] * Math.PI) / 180) *
-        Math.cos((b[0] * Math.PI) / 180) *
-        Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
-  function projectTkm(
-    p: [number, number],
-    a: [number, number],
-    b: [number, number],
-  ): number {
-    const ax = a[1],
-      ay = a[0],
-      bx = b[1],
-      by = b[0];
-    const px = p[1],
-      py = p[0];
-    const dx = bx - ax,
-      dy = by - ay;
-    const denom = dx * dx + dy * dy;
-    if (denom === 0) return 0;
-    const t = ((px - ax) * dx + (py - ay) * dy) / denom;
-    return Math.max(0, Math.min(1, t));
-  }
-  function distanceToSegmentKm(
-    p: [number, number],
-    a: [number, number],
-    b: [number, number],
-  ): number {
-    const t = projectTkm(p, a, b);
-    const proj: [number, number] = [
-      a[0] + t * (b[0] - a[0]),
-      a[1] + t * (b[1] - a[1]),
-    ];
-    return distanceKm(p, proj);
-  }
 
   let routeLayer: any = null;
   let routeStopMarkers: any[] = [];
 
-  // OSRM public demo endpoint (rate-limited; fine for a small app).
-  const OSRM_URL = "https://router.project-osrm.org/route/v1/driving";
-
-  interface OSRMRoute {
-    polyline: [number, number][]; // [lat,lng] pairs
-    cumul: number[]; // cumulative km at each polyline vertex
+  // The whole route — polyline, distance, duration and ladestopps — is
+  // computed by the Go backend at GET /api/route. The frontend only renders.
+  interface RoutePlan {
+    polyline: [number, number][];
     distanceKm: number;
     durationMin: number;
+    stops: Array<{
+      progressKm: number;
+      offrouteKm: number;
+      station: Station;
+    }>;
   }
 
-  async function fetchOSRMRoute(
-    start: [number, number],
-    end: [number, number],
-  ): Promise<OSRMRoute | null> {
-    const url =
-      `${OSRM_URL}/${start[1]},${start[0]};${end[1]},${end[0]}` +
-      `?overview=full&geometries=geojson&steps=false`;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as {
-        code: string;
-        routes: Array<{
-          distance: number;
-          duration: number;
-          geometry: { coordinates: Array<[number, number]> };
-        }>;
-      };
-      if (body.code !== "Ok" || !body.routes[0]) return null;
-      const r = body.routes[0];
-      // GeoJSON is [lng,lat] — flip for Leaflet.
-      const polyline: [number, number][] = r.geometry.coordinates.map(
-        (c) => [c[1], c[0]],
-      );
-      const cumul: number[] = new Array(polyline.length);
-      cumul[0] = 0;
-      for (let i = 1; i < polyline.length; i++) {
-        cumul[i] =
-          cumul[i - 1] + distanceKm(polyline[i - 1], polyline[i]);
+  // ---------- Route-input autocomplete (Orte only) ----------
+  // Wires an input + its dropdown to /api/suggest, filtered to kind="Ort".
+  function wireRouteAutocomplete(
+    input: HTMLInputElement,
+    dropdown: HTMLElement,
+  ): void {
+    let abortCtl: AbortController | null = null;
+    const hide = (): void => {
+      dropdown.style.display = "none";
+    };
+    const fetchAndRender = async (): Promise<void> => {
+      const q = input.value.trim();
+      if (q.length < 2) {
+        hide();
+        return;
       }
-      return {
-        polyline,
-        cumul,
-        distanceKm: r.distance / 1000,
-        durationMin: r.duration / 60,
-      };
-    } catch (err) {
-      console.error("OSRM fetch failed", err);
-      return null;
-    }
+      if (abortCtl) abortCtl.abort();
+      abortCtl = new AbortController();
+      let items: Suggestion[];
+      try {
+        items = await getJSON<Suggestion[]>(
+          `/api/suggest?q=${encodeURIComponent(q)}&limit=12`,
+          abortCtl.signal,
+        );
+      } catch (err) {
+        if ((err as DOMException | Error).name === "AbortError") return;
+        return;
+      }
+      const orte = items.filter((x) => x.kind === "Ort");
+      if (orte.length === 0) {
+        hide();
+        return;
+      }
+      const cityIcon =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01M16 6h.01M12 6h.01M12 10h.01M12 14h.01M16 10h.01M16 14h.01M8 10h.01M8 14h.01"/></svg>';
+      dropdown.innerHTML = orte
+        .map(
+          (it) =>
+            `<div class="ac-item" data-value="${escapeHtml(it.value)}">` +
+            `<div class="ac-icon">${cityIcon}</div>` +
+            `<div class="ac-text"><div class="ac-primary">${escapeHtml(it.label)}</div></div>` +
+            `<div class="ac-kind">Ort</div>` +
+            `</div>`,
+        )
+        .join("");
+      dropdown.style.display = "block";
+      dropdown.querySelectorAll<HTMLElement>(".ac-item").forEach((el) => {
+        el.addEventListener("mousedown", (ev) => {
+          // mousedown (not click) so it fires before input's blur hides us.
+          ev.preventDefault();
+          const v = el.dataset.value || "";
+          input.value = v;
+          hide();
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      });
+    };
+    const debounced = debounce(() => void fetchAndRender(), 200);
+    input.addEventListener("input", debounced);
+    input.addEventListener("focus", () => void fetchAndRender());
+    input.addEventListener("blur", () => setTimeout(hide, 150));
   }
-
-  function pointAtDistance(
-    polyline: [number, number][],
-    cumul: number[],
-    d: number,
-  ): [number, number] {
-    if (d <= 0) return polyline[0];
-    if (d >= cumul[cumul.length - 1]) return polyline[polyline.length - 1];
-    let lo = 0,
-      hi = cumul.length - 1;
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1;
-      if (cumul[mid] <= d) lo = mid;
-      else hi = mid;
-    }
-    const segLen = cumul[hi] - cumul[lo];
-    const t = segLen > 0 ? (d - cumul[lo]) / segLen : 0;
-    return [
-      polyline[lo][0] + t * (polyline[hi][0] - polyline[lo][0]),
-      polyline[lo][1] + t * (polyline[hi][1] - polyline[lo][1]),
-    ];
-  }
+  wireRouteAutocomplete(routeStart, $<HTMLElement>("#route-start-suggest"));
+  wireRouteAutocomplete(routeEnd, $<HTMLElement>("#route-end-suggest"));
 
   async function planRoute(): Promise<void> {
     const [startG, endG] = await Promise.all([
@@ -870,136 +870,55 @@ document.addEventListener("DOMContentLoaded", () => {
     routeStopMarkers.forEach((m) => map.removeLayer(m));
     routeStopMarkers = [];
 
-    // UX hint while OSRM crunches.
+    // Status while the backend is crunching OSRM + picking stops.
     routeSummary.innerHTML =
       '<div style="font-size:13px;color:var(--fg-3);text-align:center;padding:16px">Route wird berechnet…</div>';
     routeSummary.style.display = "";
 
-    const route = await fetchOSRMRoute(startG.coord, endG.coord);
-    if (!route) {
-      alert("Route konnte nicht berechnet werden (OSRM-Dienst nicht erreichbar).");
+    const params = new URLSearchParams({
+      start: `${startG.coord[0]},${startG.coord[1]}`,
+      end: `${endG.coord[0]},${endG.coord[1]}`,
+      range: String(range),
+      soc: String(soc),
+    });
+    // Route-tab chips drive the route plan (independent of the search tab).
+    // Always send tiers when at least one is active — backend default is
+    // HPC+Ultra only, which excludes Typ-2 AC chargers.
+    if (state.routeTiers.size > 0) {
+      params.set("tiers", Array.from(state.routeTiers).join(","));
+    }
+    if (state.routePlugs.size > 0) {
+      params.set("plugs", Array.from(state.routePlugs).join(","));
+    }
+
+    let plan: RoutePlan;
+    try {
+      plan = await getJSON<RoutePlan>(`/api/route?${params.toString()}`);
+    } catch (err) {
+      console.error("route plan failed", err);
+      alert("Route konnte nicht berechnet werden.");
       routeSummary.style.display = "none";
       return;
     }
 
-    routeLayer = L.polyline(route.polyline, {
+    routeLayer = L.polyline(plan.polyline, {
       color: "#4ad1ff",
       weight: 4,
       opacity: 0.9,
       smoothFactor: 1.5,
     }).addTo(map);
 
-    const totalDist = route.distanceKm;
-    const initialRange = range * (soc / 100);
-    const usableStep = range * 0.7;
-    const stepsCount = Math.max(
-      0,
-      Math.ceil((totalDist - initialRange + range * 0.2) / usableStep),
-    );
-
-    const targetDistances: number[] = [];
-    let travelled = 0;
-    let remaining = initialRange;
-    for (let i = 0; i < stepsCount; i++) {
-      const td = Math.min(totalDist - 30, travelled + remaining - 20);
-      targetDistances.push(td);
-      travelled = td;
-      remaining = range * 0.7;
-    }
-
-    // Corridor candidates: HPC/Ultra stations. Project each onto the polyline
-    // via a sampled anchor grid so we know both (a) how far off-route it is,
-    // and (b) where it sits along the route (km from start).
-    let candidates: Station[] = [];
-    try {
-      candidates = await getJSON<Station[]>(
-        "/api/stations?tiers=hpc,ultra&limit=2000",
-      );
-    } catch (err) {
-      console.error("route corridor fetch failed", err);
-    }
-
-    const anchorStepKm = 2; // finer sampling → better off-route estimation
-    const anchorCount = Math.max(
-      2,
-      Math.ceil(totalDist / anchorStepKm) + 1,
-    );
-    const anchors: Array<{ d: number; pt: [number, number] }> = [];
-    for (let i = 0; i < anchorCount; i++) {
-      const d = Math.min(totalDist, i * anchorStepKm);
-      anchors.push({ d, pt: pointAtDistance(route.polyline, route.cumul, d) });
-    }
-
-    interface Corridor {
-      s: Station;
-      offroute: number; // km from nearest anchor (≈ straight-line detour one-way)
-      progress: number; // km from start along route
-    }
-
-    // Corridor radius scales with range so short-range cars aren't sent on
-    // 30 km detours. Always keep an upper bound — a HPC 12 km off a 500 km
-    // trip is fine; 12 km off a 120 km trip is already a big detour.
-    const corridorRadius = Math.max(5, Math.min(12, range * 0.08));
-
-    const corridor: Corridor[] = [];
-    for (const s of candidates) {
-      if (s.lat === 0 && s.lng === 0) continue;
-      let bestD = Infinity;
-      let bestProgress = 0;
-      for (const a of anchors) {
-        const d = distanceKm([s.lat, s.lng], a.pt);
-        if (d < bestD) {
-          bestD = d;
-          bestProgress = a.d;
-        }
-      }
-      if (
-        bestD < corridorRadius &&
-        bestProgress > totalDist * 0.05 &&
-        bestProgress < totalDist * 0.95
-      ) {
-        corridor.push({ s, offroute: bestD, progress: bestProgress });
-      }
-    }
-
-    // Pick stops. For each target distance td, only consider candidates we
-    // can actually reach (progress ≤ td) and that we aren't already past
-    // (progress > last chosen). Then rank by a weighted cost that heavily
-    // penalises off-route detours — a station directly on the motorway beats
-    // a station 10 km away even if the latter sits closer to target distance.
-    const chosen: Corridor[] = [];
-    for (const td of targetDistances) {
-      const lastProgress =
-        chosen.length > 0 ? chosen[chosen.length - 1].progress : 0;
-      const windowMin = lastProgress + 20; // don't pick a station right next to the previous
-      const windowMax = td; // must reach it before running out
-      const eligible = corridor.filter(
-        (c) =>
-          c.progress >= windowMin &&
-          c.progress <= windowMax &&
-          !chosen.includes(c),
-      );
-      if (eligible.length === 0) continue;
-      // Cost: off-route distance dominates (×3), then arrival window slack.
-      eligible.sort(
-        (a, b) =>
-          a.offroute * 3 +
-          (td - a.progress) -
-          (b.offroute * 3 + (td - b.progress)),
-      );
-      chosen.push(eligible[0]);
-    }
-    chosen.sort((a, b) => a.progress - b.progress);
-
-    chosen.forEach((c, i) => {
+    plan.stops.forEach((stop, i) => {
       const icon = L.divIcon({
         className: "station-marker-wrap",
         html: `<div class="cluster-marker" style="background:var(--hpc);color:#0b0f14;border-color:var(--hpc);width:34px;height:34px;font-size:13px">${i + 1}</div>`,
         iconSize: [34, 34],
       });
-      const m = L.marker([c.s.lat, c.s.lng], { icon }).addTo(map);
+      const m = L.marker([stop.station.lat, stop.station.lng], { icon }).addTo(
+        map,
+      );
       m.on("click", () =>
-        void selectStation(c.s.id, true, { preserveZoom: true }),
+        void selectStation(stop.station.id, true, { preserveZoom: true }),
       );
       routeStopMarkers.push(m);
     });
@@ -1019,29 +938,51 @@ document.addEventListener("DOMContentLoaded", () => {
     }).addTo(map);
     routeStopMarkers.push(sM, eM);
 
-    map.flyToBounds(L.latLngBounds(route.polyline).pad(0.15), {
-      duration: 0.8,
-    });
+    map.flyToBounds(L.latLngBounds(plan.polyline).pad(0.15), { duration: 0.8 });
 
-    const drivingMin = Math.round(route.durationMin);
-    const chargingMin = chosen.length * 22;
+    const drivingMin = Math.round(plan.durationMin);
+    // Per-stop charging time is a per-tier estimate of a 10→80% DC charge
+    // (plus AC is just what you can do in 90 min). Good enough for trip
+    // planning; real duration depends on the car's acceptance curve.
+    const perStopMin = plan.stops.map((s) => chargeMinutes(s.station.nennleistungKw));
+    const chargingMin = perStopMin.reduce((a, b) => a + b, 0);
+    const firstStopKm =
+      plan.stops.length > 0 ? plan.stops[0].progressKm : 0;
+    const plugsBadge =
+      state.routePlugs.size > 0
+        ? ` <span style="margin-left:8px;font-size:10px;color:var(--brand);text-transform:uppercase;letter-spacing:.06em">nur ${Array.from(state.routePlugs).join(" · ")}</span>`
+        : "";
     routeSummary.innerHTML =
       '<div class="route-summary-top">' +
-      `<div class="route-summary-stat"><div class="v">${Math.round(totalDist)} km</div><div class="l">Distanz</div></div>` +
+      `<div class="route-summary-stat"><div class="v">${Math.round(plan.distanceKm)} km</div><div class="l">Distanz</div></div>` +
       `<div class="route-summary-stat"><div class="v">${Math.floor(drivingMin / 60)} h ${drivingMin % 60} min</div><div class="l">Fahrzeit</div></div>` +
-      `<div class="route-summary-stat"><div class="v">${chosen.length}</div><div class="l">Ladestopps</div></div>` +
+      `<div class="route-summary-stat"><div class="v">${plan.stops.length}</div><div class="l">Ladestopps${plugsBadge}</div></div>` +
       "</div>" +
-      (chosen.length > 0
-        ? '<div class="route-stops-list">' +
-          chosen
-            .map(
-              (c, i) =>
-                `<div class="route-stop-row" data-id="${c.s.id}" style="cursor:pointer">` +
+      (plan.stops.length > 0
+        ? `<div class="route-first-hint">Erster Stopp nach <b>${firstStopKm} km</b></div>` +
+          '<div class="route-stops-list">' +
+          plan.stops
+            .map((stop, i) => {
+              const mins = perStopMin[i];
+              const distFromPrev =
+                i === 0
+                  ? stop.progressKm
+                  : Math.round((stop.progressKm - plan.stops[i - 1].progressKm) * 10) / 10;
+              return (
+                `<div class="route-stop-row" data-id="${stop.station.id}" style="cursor:pointer">` +
                 `<div class="num">${i + 1}</div>` +
-                `<div class="name">${escapeHtml(operatorShort(c.s.betreiber || ""))} · ${escapeHtml(c.s.ort || "")}</div>` +
-                `<div class="mini">${c.s.nennleistungKw} kW · ~22 min</div>` +
-                "</div>",
-            )
+                `<div class="stop-body">` +
+                `<div class="name">${escapeHtml(operatorShort(stop.station.betreiber || ""))} · ${escapeHtml(stop.station.ort || "")}</div>` +
+                `<div class="mini">nach ${stop.progressKm} km · ${mins} min laden · ${stop.station.nennleistungKw} kW` +
+                (i === 0 ? "" : ` · +${distFromPrev} km zum Vorstopp`) +
+                (stop.offrouteKm > 0.5
+                  ? ` · <span style="color:var(--fg-4)">${stop.offrouteKm} km ab Route</span>`
+                  : "") +
+                `</div>` +
+                `</div>` +
+                "</div>"
+              );
+            })
             .join("") +
           "</div>"
         : '<div style="font-size:12px;color:var(--fg-3);text-align:center;padding:6px">Keine Ladestopps notwendig</div>') +
@@ -1162,6 +1103,24 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  routePlugChips.forEach((c) => {
+    c.addEventListener("click", () => {
+      const p = c.dataset.routePlug as string;
+      if (state.routePlugs.has(p)) state.routePlugs.delete(p);
+      else state.routePlugs.add(p);
+      c.classList.toggle("active", state.routePlugs.has(p));
+    });
+  });
+
+  routeTierChips.forEach((c) => {
+    c.addEventListener("click", () => {
+      const t = c.dataset.routeTier as string;
+      if (state.routeTiers.has(t)) state.routeTiers.delete(t);
+      else state.routeTiers.add(t);
+      c.classList.toggle("active", state.routeTiers.has(t));
+    });
+  });
+
   tabs.forEach((t) => {
     t.addEventListener("click", () => {
       const name = (t.dataset.tab || "search") as "search" | "route";
@@ -1177,6 +1136,31 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   planBtn.addEventListener("click", () => void planRoute());
 
+  // ---------- Mobile sidebar drawer ----------
+  const isMobile = (): boolean =>
+    window.matchMedia("(max-width: 860px)").matches;
+  function openSidebar(): void {
+    sidebarEl?.classList.add("open");
+    sidebarBackdrop?.classList.add("open");
+  }
+  function closeSidebar(): void {
+    sidebarEl?.classList.remove("open");
+    sidebarBackdrop?.classList.remove("open");
+  }
+  // Document-level delegation: survives even if specific nodes are rebuilt
+  // or initially missing. pointerup is more reliable than click on iOS Safari.
+  document.addEventListener("pointerup", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("#sidebar-toggle")) {
+      if (sidebarEl?.classList.contains("open")) closeSidebar();
+      else openSidebar();
+    } else if (t.closest("#sidebar-backdrop")) {
+      closeSidebar();
+    } else if (t.closest(".result") && isMobile()) {
+      closeSidebar();
+    }
+  });
+
   map.on("moveend", () => {
     if (suppressNextMoveend) {
       suppressNextMoveend = false;
@@ -1187,10 +1171,161 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!isFilterActive()) debouncedApplyFiltersMap();
   });
 
+  // ---------- URL state persistence ----------
+  // The URL is the source of truth for what to restore on reload. We
+  // update it (replaceState, so no history noise) whenever a user-facing
+  // knob changes, and we read it once at startup.
+  function syncURL(): void {
+    const p = new URLSearchParams();
+    if (state.tab === "route") p.set("tab", "route");
+    if (routeStart.value) p.set("from", routeStart.value);
+    if (routeEnd.value) p.set("to", routeEnd.value);
+    if (rangeSlider.value && rangeSlider.value !== "120") {
+      p.set("range", rangeSlider.value);
+    }
+    if (socSlider.value && socSlider.value !== "85") {
+      p.set("soc", socSlider.value);
+    }
+    if (state.routeTiers.size > 0 && state.routeTiers.size < 4) {
+      p.set("rt", Array.from(state.routeTiers).join(","));
+    }
+    if (state.routePlugs.size > 0) {
+      p.set("rp", Array.from(state.routePlugs).join(","));
+    }
+    if (state.query) p.set("q", state.query);
+    if (state.operator && state.operator !== "all") {
+      p.set("op", state.operator);
+    }
+    if (state.tiers.size > 0 && state.tiers.size < 4) {
+      p.set("t", Array.from(state.tiers).join(","));
+    }
+    if (state.plugs.size > 0) {
+      p.set("pl", Array.from(state.plugs).join(","));
+    }
+    if (state.availability.size > 0) {
+      p.set("av", Array.from(state.availability).join(","));
+    }
+    const qs = p.toString();
+    const next = qs ? "?" + qs : location.pathname;
+    if (location.search !== (qs ? "?" + qs : "")) {
+      history.replaceState(null, "", next);
+    }
+  }
+  const debouncedSyncURL = debounce(syncURL, 300);
+
+  function restoreFromURL(): boolean {
+    const p = new URLSearchParams(location.search);
+    let hasAny = false;
+
+    const from = p.get("from");
+    const to = p.get("to");
+    if (from) {
+      routeStart.value = from;
+      hasAny = true;
+    }
+    if (to) {
+      routeEnd.value = to;
+      hasAny = true;
+    }
+    const rg = p.get("range");
+    if (rg) {
+      rangeSlider.value = rg;
+      rangeValue.textContent = rg + " km";
+    }
+    const sc = p.get("soc");
+    if (sc) {
+      socSlider.value = sc;
+      socValue.textContent = sc + "%";
+    }
+    const rt = p.get("rt");
+    if (rt !== null) {
+      state.routeTiers = new Set(rt ? rt.split(",") : []);
+      routeTierChips.forEach((c) => {
+        c.classList.toggle(
+          "active",
+          state.routeTiers.has(c.dataset.routeTier as string),
+        );
+      });
+    }
+    const rp = p.get("rp");
+    if (rp !== null) {
+      state.routePlugs = new Set(rp ? rp.split(",") : []);
+      routePlugChips.forEach((c) => {
+        c.classList.toggle(
+          "active",
+          state.routePlugs.has(c.dataset.routePlug as string),
+        );
+      });
+    }
+
+    const q = p.get("q");
+    if (q) {
+      searchInput.value = q;
+      state.query = q;
+      searchClear.style.display = "grid";
+    }
+    // Operator is applied after loadOperators resolves.
+    const t = p.get("t");
+    if (t !== null) {
+      state.tiers = new Set(t ? t.split(",") : []);
+      tierChips.forEach((c) => {
+        c.classList.toggle("active", state.tiers.has(c.dataset.tier as string));
+      });
+    }
+    const pl = p.get("pl");
+    if (pl !== null) {
+      state.plugs = new Set(pl ? pl.split(",") : []);
+      plugChips.forEach((c) => {
+        c.classList.toggle("active", state.plugs.has(c.dataset.plug as string));
+      });
+    }
+    const av = p.get("av");
+    if (av !== null) {
+      state.availability = new Set(av ? av.split(",") : []);
+      availChips.forEach((c) => {
+        c.classList.toggle(
+          "active",
+          state.availability.has(c.dataset.avail as string),
+        );
+      });
+    }
+
+    if (p.get("tab") === "route") switchTab("route");
+    return hasAny;
+  }
+
+  // Hook URL sync to user-facing changes. All of these paths already mutate
+  // state; we just piggy-back a replaceState.
+  routeStart.addEventListener("input", debouncedSyncURL);
+  routeEnd.addEventListener("input", debouncedSyncURL);
+  rangeSlider.addEventListener("input", debouncedSyncURL);
+  socSlider.addEventListener("input", debouncedSyncURL);
+  routeTierChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
+  routePlugChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
+  tierChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
+  plugChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
+  availChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
+  searchInput.addEventListener("input", debouncedSyncURL);
+  operatorSelect.addEventListener("change", debouncedSyncURL);
+  tabs.forEach((t) => t.addEventListener("click", debouncedSyncURL));
+
   // ---------- Init ----------
-  switchTab("search");
-  void loadOperators();
+  const hasRouteFromURL = restoreFromURL();
+  if (!new URLSearchParams(location.search).has("tab")) {
+    switchTab("search");
+  }
+  void loadOperators().then(() => {
+    const opFromURL = new URLSearchParams(location.search).get("op");
+    if (opFromURL) {
+      state.operator = opFromURL;
+      operatorSelect.value = opFromURL;
+    }
+  });
   void applyFilters();
+  if (hasRouteFromURL && state.tab === "route") {
+    // Auto-plan the route the user had saved in the URL.
+    void planRoute();
+  }
 });
 
 // Make this file a module so `declare global` works under strict tsconfig.
