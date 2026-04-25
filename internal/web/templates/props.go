@@ -280,6 +280,40 @@ input { font-family: inherit; }
 .chip[data-avail="offline"] .dot { background: var(--avail-off); }
 .chip[data-plug] { font-variant-numeric: tabular-nums; }
 
+/* Operator combobox — searchable input with a suggestion dropdown */
+.combobox-wrap { position: relative; }
+.combobox-input {
+  width: 100%;
+  padding: 10px 36px 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-md);
+  color: var(--fg-1);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
+}
+.combobox-input::placeholder { color: var(--fg-3); }
+.combobox-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-glow);
+}
+.combobox-clear {
+  position: absolute;
+  right: 8px; top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  color: var(--fg-3);
+  border-radius: 6px;
+  transition: background .15s var(--ease), color .15s var(--ease);
+}
+.combobox-clear:hover { background: var(--bg-3); color: var(--fg-1); }
+.combobox-clear svg { width: 14px; height: 14px; }
+.ac-item.muted { color: var(--fg-3); cursor: default; }
+.ac-item.muted:hover { background: transparent; }
+.ac-item .ac-primary.all { color: var(--brand); font-weight: 600; }
+
 /* Operator select */
 .select-wrap { position: relative; }
 .select {
@@ -707,18 +741,21 @@ input { font-family: inherit; }
   letter-spacing: -0.02em;
 }
 .detail-kw-big .unit { font-size: 16px; font-weight: 600; color: var(--fg-3); margin-left: 2px; }
+/* Close lives on the LEFT side of the panel — the right side overlaps the
+   Leaflet zoom control which is harder to dodge than just moving here. */
 .detail-close {
-  position: absolute; top: 12px; right: 12px; z-index: 2;
-  width: 32px; height: 32px;
-  border-radius: 8px;
-  background: rgba(0,0,0,.5);
+  position: absolute; top: 12px; left: 12px; z-index: 2;
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: rgba(0,0,0,.55);
   backdrop-filter: blur(6px);
   color: var(--fg-1);
   display: grid; place-items: center;
-  transition: background .15s var(--ease);
+  transition: background .15s var(--ease), transform .15s var(--ease);
 }
-.detail-close:hover { background: rgba(0,0,0,.7); }
-.detail-close svg { width: 16px; height: 16px; }
+.detail-close:hover { background: rgba(0,0,0,.75); }
+.detail-close:active { transform: scale(0.92); }
+.detail-close svg { width: 18px; height: 18px; }
 
 .detail-body {
   padding: 18px;
@@ -746,6 +783,33 @@ input { font-family: inherit; }
 .detail-avail-icon svg { width: 16px; height: 16px; }
 .detail-avail-text .t { font-size: 13px; font-weight: 600; color: var(--fg-1); }
 .detail-avail-text .s { font-size: 11px; color: var(--fg-3); }
+
+/* Live availability block (Open Charge Map) */
+.detail-live { display: flex; flex-direction: column; }
+.live-loading { font-size: 12px; color: var(--fg-3); padding: 8px 12px; }
+.live-block {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-2);
+  background: var(--bg-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.live-block.available { border-color: color-mix(in srgb, var(--avail-free) 40%, var(--border-2)); }
+.live-block.occupied  { border-color: color-mix(in srgb, var(--avail-busy) 40%, var(--border-2)); }
+.live-block.offline   { border-color: color-mix(in srgb, var(--avail-off) 40%, var(--border-2)); }
+.live-block.muted     { background: var(--bg-2); }
+.live-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.live-label { font-size: 10px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.live-status { font-size: 13px; font-weight: 600; color: var(--fg-1); }
+.live-block.available .live-status { color: var(--avail-free); }
+.live-block.occupied  .live-status { color: var(--avail-busy); }
+.live-block.offline   .live-status { color: var(--avail-off); }
+.live-status.muted { color: var(--fg-3); font-weight: 500; font-size: 12px; }
+.live-meta { font-size: 11px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.live-source { font-size: 10px; color: var(--fg-3); margin-top: 4px; line-height: 1.4; }
+.live-source a { color: var(--fg-2); }
 
 .detail-section h3 {
   margin: 0 0 10px;
@@ -884,17 +948,19 @@ input { font-family: inherit; }
   .legend-title { display: none; }
   .legend-item { gap: 4px; }
 
-  /* Detail panel becomes a bottom sheet. */
+  /* Detail panel becomes a bottom sheet — capped at 60vh so the user keeps
+     ~40 % of the map visible (with the surrounding station markers). */
   .detail-panel {
     top: auto; right: 0; left: 0; bottom: 0;
     width: 100%; max-width: 100%;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    max-height: 85vh;
+    max-height: 60vh;
     transform: translateY(100%);
   }
   .detail-panel.open { transform: translateY(0); }
-  .detail-hero { height: 90px; }
-  .detail-kw-big { font-size: 26px; }
+  .detail-hero { height: 80px; }
+  .detail-kw-big { font-size: 24px; }
+  .detail-body { padding: 14px; gap: 14px; }
 
   /* Larger tap targets on chips and inputs. */
   .chip { padding: 8px 14px; font-size: 13px; }

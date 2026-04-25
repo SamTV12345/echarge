@@ -13,6 +13,7 @@ import (
 
 	"echarge/internal/build"
 	"echarge/internal/data"
+	"echarge/internal/ocm"
 	"echarge/internal/osrm"
 	"echarge/internal/route"
 	"echarge/internal/web"
@@ -23,6 +24,10 @@ func main() {
 	srcDir := flag.String("src", "web/src", "TypeScript source directory")
 	osrmURL := flag.String("osrm", "https://router.project-osrm.org",
 		"OSRM base URL for route planning (set empty to disable)")
+	ocmURL := flag.String("ocm", "https://api.openchargemap.io/v3",
+		"Open Charge Map base URL for live availability (set empty to disable)")
+	ocmKey := flag.String("ocm-key", os.Getenv("OCM_API_KEY"),
+		"Open Charge Map API key (optional; falls back to OCM_API_KEY env)")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -48,6 +53,14 @@ func main() {
 			OSRM:  osrm.New(*osrmURL, nil),
 		}
 		log.Printf("startup: route planner enabled (OSRM %s)", *osrmURL)
+	}
+	if *ocmURL != "" {
+		srv.OCM = ocm.New(*ocmURL, *ocmKey, nil)
+		keyHint := "no key"
+		if *ocmKey != "" {
+			keyHint = "with key"
+		}
+		log.Printf("startup: live availability enabled (Open Charge Map %s, %s)", *ocmURL, keyHint)
 	}
 	httpSrv := &http.Server{
 		Addr:              *addr,

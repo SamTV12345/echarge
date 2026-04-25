@@ -193,7 +193,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const searchInput = $<HTMLInputElement>("#search");
   const searchClear = $<HTMLButtonElement>("#search-clear");
   const autocomplete = $<HTMLDivElement>("#autocomplete");
-  const operatorSelect = $<HTMLSelectElement>("#operator");
+  const operatorInput = $<HTMLInputElement>("#operator-input");
+  const operatorClear = $<HTMLButtonElement>("#operator-clear");
+  const operatorSuggest = $<HTMLDivElement>("#operator-suggest");
   const tierChips = document.querySelectorAll<HTMLElement>(".chip[data-tier]");
   const plugChips = document.querySelectorAll<HTMLElement>(".chip[data-plug]");
   const availChips = document.querySelectorAll<HTMLElement>(".chip[data-avail]");
@@ -492,6 +494,12 @@ document.addEventListener("DOMContentLoaded", () => {
       // On mobile the sidebar covers the map; slide it away so the user
       // actually sees where we just panned to.
       if (isMobile()) closeSidebar();
+      // The flyTo / panTo we are about to issue would otherwise trigger a
+      // moveend, which refetches the visible bbox — and at zoom 14 that
+      // throws away every marker outside the tiny new viewport. Suppress
+      // exactly one moveend so the user keeps the surrounding stations in
+      // the cluster; their next manual pan/zoom refetches normally.
+      suppressNextMoveend = true;
       if (opts.preserveZoom) {
         // Clicking a route stop: keep the route-overview zoom so the whole
         // polyline stays in frame. Just pan.
@@ -563,6 +571,12 @@ document.addEventListener("DOMContentLoaded", () => {
       `<div class="s">${availSub(avail)} · ${s.anzahlLadepunkte} Ladepunkt${s.anzahlLadepunkte === 1 ? "" : "e"}</div>` +
       "</div>" +
       "</div>" +
+      // Placeholder for the asynchronously-fetched OCM live status. Filled
+      // in by fetchLiveAvailability() below; falls back to a friendly
+      // message if OCM has nothing for this station.
+      '<div class="detail-live" id="detail-live">' +
+      '<div class="live-loading">Live-Status wird geladen…</div>' +
+      "</div>" +
       '<div class="detail-section">' +
       "<h3>Stecker-Typen</h3>" +
       `<div class="plug-list">${plugListHtml}</div>` +
@@ -600,6 +614,76 @@ document.addEventListener("DOMContentLoaded", () => {
         switchTab("route");
         routeEnd.value = addr;
       });
+
+    void fetchLiveAvailability(s.id);
+  }
+
+  // ---------- Live availability (Open Charge Map) ----------
+  interface LiveAvailability {
+    source: string;
+    configured: boolean;
+    matched: boolean;
+    status?: string;
+    isOperational?: boolean;
+    lastUpdated?: string;
+    distanceKm?: number;
+    operator?: string;
+    note?: string;
+  }
+
+  async function fetchLiveAvailability(stationId: number): Promise<void> {
+    const slot = document.getElementById("detail-live");
+    if (!slot) return;
+    let data: LiveAvailability;
+    try {
+      data = await getJSON<LiveAvailability>(
+        `/api/stations/${stationId}/availability`,
+      );
+    } catch (err) {
+      slot.innerHTML =
+        '<div class="live-note">Live-Status nicht abrufbar.</div>';
+      return;
+    }
+
+    if (data.matched) {
+      const op = data.isOperational;
+      const tone =
+        op === false
+          ? "offline"
+          : data.status?.toLowerCase().includes("use")
+            ? "occupied"
+            : "available";
+      const updated = formatRelativeTime(data.lastUpdated);
+      slot.innerHTML =
+        `<div class="live-block ${tone}">` +
+        `<div class="live-row"><span class="live-label">Live-Status</span><span class="live-status">${escapeHtml(data.status || "Unbekannt")}</span></div>` +
+        (updated
+          ? `<div class="live-meta">Stand: ${escapeHtml(updated)}</div>`
+          : "") +
+        `<div class="live-source">Quelle: <a href="https://openchargemap.org/" target="_blank" rel="noopener">Open Charge Map</a> · Community-gepflegt, kein Echtzeit-Garantieprotokoll</div>` +
+        "</div>";
+    } else {
+      slot.innerHTML =
+        '<div class="live-block muted">' +
+        `<div class="live-row"><span class="live-label">Live-Status</span><span class="live-status muted">${escapeHtml(data.note || "keine Daten")}</span></div>` +
+        '<div class="live-source">Echtzeit-Belegung gibt es zuverlässig nur in den Apps der Betreiber (EnBW, Ionity, …) oder über GoingElectric/EVMap.</div>' +
+        "</div>";
+    }
+  }
+
+  function formatRelativeTime(iso?: string): string {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return "";
+    const deltaSec = (Date.now() - t) / 1000;
+    if (deltaSec < 90) return "vor wenigen Sekunden";
+    if (deltaSec < 60 * 60)
+      return `vor ${Math.round(deltaSec / 60)} Minuten`;
+    if (deltaSec < 60 * 60 * 24)
+      return `vor ${Math.round(deltaSec / 3600)} Stunden`;
+    if (deltaSec < 60 * 60 * 24 * 30)
+      return `vor ${Math.round(deltaSec / 86400)} Tagen`;
+    return new Date(t).toLocaleDateString("de-DE");
   }
 
   function closeDetail(): void {
@@ -708,8 +792,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function applySuggestion(it: Suggestion): Promise<void> {
     if (it.kind === "Betreiber") {
-      operatorSelect.value = it.value;
-      state.operator = it.value;
+      setOperator(it.value, it.value);
       searchInput.value = "";
       state.query = "";
       searchClear.style.display = "none";
@@ -999,29 +1082,93 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // ---------- Operator select population ----------
-  async function loadOperators(): Promise<void> {
+  // ---------- Operator combobox (searchable) ----------
+  // Selecting an operator drives state.operator; "all" clears the filter.
+  function setOperator(value: string, label: string): void {
+    state.operator = value || "all";
+    if (state.operator === "all") {
+      operatorInput.value = "";
+      operatorClear.style.display = "none";
+    } else {
+      operatorInput.value = label;
+      operatorClear.style.display = "grid";
+    }
+    void applyFilters();
+    debouncedSyncURL();
+  }
+
+  function hideOperatorDropdown(): void {
+    operatorSuggest.style.display = "none";
+  }
+
+  async function fetchOperatorOptions(prefix: string): Promise<void> {
     if (betreiberAbort) betreiberAbort.abort();
     betreiberAbort = new AbortController();
     let names: string[];
     try {
       names = await getJSON<string[]>(
-        "/api/betreiber?limit=500",
+        `/api/betreiber?q=${encodeURIComponent(prefix)}&limit=20`,
         betreiberAbort.signal,
       );
     } catch (err) {
       if ((err as DOMException | Error).name === "AbortError") return;
-      console.error("betreiber fetch failed", err);
+      console.error("operator fetch failed", err);
       return;
     }
-    const opts = [
-      '<option value="all">Alle Betreiber</option>',
-      ...names.map(
-        (n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`,
-      ),
-    ];
-    operatorSelect.innerHTML = opts.join("");
+    renderOperatorDropdown(names);
   }
+
+  function renderOperatorDropdown(names: string[]): void {
+    const head =
+      '<div class="ac-item" data-value="all">' +
+      '<div class="ac-text"><div class="ac-primary all">Alle Betreiber</div></div>' +
+      "</div>";
+    if (names.length === 0) {
+      operatorSuggest.innerHTML =
+        head +
+        '<div class="ac-item muted"><div class="ac-text"><div class="ac-primary">Kein Treffer</div></div></div>';
+    } else {
+      operatorSuggest.innerHTML =
+        head +
+        names
+          .map(
+            (n) =>
+              `<div class="ac-item" data-value="${escapeHtml(n)}">` +
+              `<div class="ac-text"><div class="ac-primary">${escapeHtml(n)}</div></div>` +
+              "</div>",
+          )
+          .join("");
+    }
+    operatorSuggest.style.display = "block";
+    operatorSuggest.querySelectorAll<HTMLElement>(".ac-item").forEach((el) => {
+      if (el.classList.contains("muted")) return;
+      el.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); // run before blur hides the dropdown
+        const v = el.dataset.value || "all";
+        setOperator(v, v === "all" ? "" : v);
+        hideOperatorDropdown();
+        operatorInput.blur();
+      });
+    });
+  }
+
+  const debouncedFetchOperators = debounce(
+    () => void fetchOperatorOptions(operatorInput.value.trim()),
+    200,
+  );
+
+  operatorInput.addEventListener("input", debouncedFetchOperators);
+  operatorInput.addEventListener("focus", () =>
+    void fetchOperatorOptions(operatorInput.value.trim()),
+  );
+  operatorInput.addEventListener("blur", () =>
+    setTimeout(hideOperatorDropdown, 150),
+  );
+  operatorClear.addEventListener("click", () => {
+    setOperator("all", "");
+    hideOperatorDropdown();
+    operatorInput.focus();
+  });
 
   // ---------- Event wiring ----------
   const debouncedApplyFilters = debounce(() => void applyFilters(), 250);
@@ -1067,10 +1214,8 @@ document.addEventListener("DOMContentLoaded", () => {
     void applyFilters();
   });
 
-  operatorSelect.addEventListener("change", () => {
-    state.operator = operatorSelect.value;
-    void applyFilters();
-  });
+  // Operator changes flow exclusively through setOperator() (combobox);
+  // applyFilters + URL sync are triggered there.
 
   tierChips.forEach((c) => {
     c.classList.add("active"); // prototype: start all active
@@ -1306,7 +1451,7 @@ document.addEventListener("DOMContentLoaded", () => {
   plugChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
   availChips.forEach((c) => c.addEventListener("click", debouncedSyncURL));
   searchInput.addEventListener("input", debouncedSyncURL);
-  operatorSelect.addEventListener("change", debouncedSyncURL);
+  // operator changes already trigger debouncedSyncURL via setOperator().
   tabs.forEach((t) => t.addEventListener("click", debouncedSyncURL));
 
   // ---------- Init ----------
@@ -1314,13 +1459,14 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!new URLSearchParams(location.search).has("tab")) {
     switchTab("search");
   }
-  void loadOperators().then(() => {
-    const opFromURL = new URLSearchParams(location.search).get("op");
-    if (opFromURL) {
-      state.operator = opFromURL;
-      operatorSelect.value = opFromURL;
-    }
-  });
+  // Operator combobox: just reflect the URL value into the input. No need
+  // to preload a giant list — the dropdown is fetched on demand.
+  const opFromURL = new URLSearchParams(location.search).get("op");
+  if (opFromURL) {
+    state.operator = opFromURL;
+    operatorInput.value = opFromURL;
+    operatorClear.style.display = "grid";
+  }
   void applyFilters();
   if (hasRouteFromURL && state.tab === "route") {
     // Auto-plan the route the user had saved in the URL.

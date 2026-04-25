@@ -10,12 +10,14 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"echarge/internal/data"
+	"echarge/internal/ocm"
 	"echarge/internal/route"
 	"echarge/internal/web/templates"
 )
@@ -28,6 +30,7 @@ type Server struct {
 	Store    *data.Store
 	JSBundle []byte
 	Planner  *route.Planner
+	OCM      *ocm.Client // optional; if nil, /api/stations/{id}/availability returns "no data"
 }
 
 // Handler returns the fully wired ServeMux, including logging and panic
@@ -42,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /assets/app.css", s.handleCSS)
 	mux.HandleFunc("GET /api/stations", s.handleStations)
 	mux.HandleFunc("GET /api/stations/{id}", s.handleStationByID)
+	mux.HandleFunc("GET /api/stations/{id}/availability", s.handleAvailability)
 	mux.HandleFunc("GET /api/betreiber", s.handleBetreiber)
 	mux.HandleFunc("GET /api/suggest", s.handleSuggest)
 	mux.HandleFunc("GET /api/geocode", s.handleGeocode)
@@ -161,6 +165,108 @@ func (s *Server) handleStationByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, station)
+}
+
+// availabilityResponse is what the frontend renders in the detail panel.
+// Source is always set so the UI can credit it; matched=false means we
+// queried but found no nearby OCM record for this station.
+type availabilityResponse struct {
+	Source        string  `json:"source"`     // e.g. "openchargemap"
+	Configured    bool    `json:"configured"` // false → no OCM client wired
+	Matched       bool    `json:"matched"`    // true → a POI matched within match radius
+	Status        string  `json:"status,omitempty"`
+	IsOperational *bool   `json:"isOperational,omitempty"`
+	LastUpdated   string  `json:"lastUpdated,omitempty"` // ISO8601, may be ""
+	DistanceKm    float64 `json:"distanceKm,omitempty"`  // straight-line km from registry coord to OCM POI
+	OperatorTitle string  `json:"operator,omitempty"`
+	Note          string  `json:"note,omitempty"` // human-readable disclaimer
+}
+
+func (s *Server) handleAvailability(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	st, err := s.Store.GetStation(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, data.ErrNotFound) {
+			http.Error(w, "station not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("availability %d: lookup failed: %v", id, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := availabilityResponse{Source: "openchargemap"}
+
+	if s.OCM == nil {
+		resp.Note = "Live-Status nicht konfiguriert."
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.Configured = true
+
+	if st.Breitengrad == 0 || st.Laengengrad == 0 {
+		resp.Note = "Station hat keine Koordinaten — Live-Status nicht abrufbar."
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	pois, err := s.OCM.NearbyPOIs(r.Context(), st.Breitengrad, st.Laengengrad, 0.5, 5)
+	if err != nil {
+		log.Printf("availability %d: OCM query failed: %v", id, err)
+		switch {
+		case errors.Is(err, ocm.ErrAuthRequired):
+			resp.Note = "Open Charge Map verlangt einen API-Key. Setze die Umgebungsvariable OCM_API_KEY (kostenfrei unter openchargemap.io registrieren)."
+		default:
+			resp.Note = "Open Charge Map ist gerade nicht erreichbar."
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Pick the closest POI within 150 m as the match. OCM coordinates often
+	// drift a bit from the BNetzA registry; 150 m is forgiving enough.
+	const matchRadiusKm = 0.15
+	var best *ocm.POI
+	bestDist := math.MaxFloat64
+	for i := range pois {
+		d := haversineKm(st.Breitengrad, st.Laengengrad, pois[i].Latitude, pois[i].Longitude)
+		if d < matchRadiusKm && d < bestDist {
+			bestDist = d
+			best = &pois[i]
+		}
+	}
+	if best == nil {
+		resp.Note = "Kein passender Open-Charge-Map-Eintrag in 150 m Umkreis gefunden."
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	resp.Matched = true
+	resp.Status = best.StatusTitle
+	resp.IsOperational = best.IsOperational
+	resp.OperatorTitle = best.OperatorTitle
+	resp.DistanceKm = math.Round(bestDist*1000) / 1000
+	if best.LastUpdated != nil {
+		resp.LastUpdated = best.LastUpdated.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
+	const R = 6371.0
+	const toRad = math.Pi / 180
+	dLat := (lat2 - lat1) * toRad
+	dLng := (lng2 - lng1) * toRad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*toRad)*math.Cos(lat2*toRad)*
+			math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * R * math.Asin(math.Sqrt(a))
 }
 
 func (s *Server) handleBetreiber(w http.ResponseWriter, r *http.Request) {

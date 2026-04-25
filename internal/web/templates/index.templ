@@ -43,8 +43,12 @@ templ Index(props IndexProps) {
 					<!-- Operator -->
 					<div class="filter-group">
 						<div class="filter-label">Betreiber</div>
-						<div class="select-wrap">
-							<select id="operator" class="select"></select>
+						<div class="combobox-wrap">
+							<input id="operator-input" class="combobox-input" type="text" placeholder="Alle Betreiber — tippen zum Filtern" autocomplete="off" spellcheck="false"/>
+								<button id="operator-clear" class="combobox-clear" type="button" aria-label="Filter zurücksetzen" style="display:none">
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+								</button>
+								<div id="operator-suggest" class="autocomplete" style="display:none"></div>
 						</div>
 					</div>
 					<!-- Leistung -->
