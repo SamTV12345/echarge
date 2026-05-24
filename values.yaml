@@ -1,0 +1,5 @@
+# Managed by .github/workflows/docker.yml — do not edit by hand.
+# Updated automatically after every successful image push.
+image:
+  repository: ghcr.io/samtv12345/echarge
+  tag: "sha256:8ab5c0929c7666a97cb224b386ffbd36f7de3e93aa5b8cf33e949679931682e9"
