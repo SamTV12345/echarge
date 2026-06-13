@@ -2,4 +2,4 @@
 # Updated automatically after every successful image push.
 image:
   repository: ghcr.io/samtv12345/echarge
-  tag: "sha256:8ab5c0929c7666a97cb224b386ffbd36f7de3e93aa5b8cf33e949679931682e9"
+  tag: "sha256:7dd355437caf6e455e607a204c819f13aaffd229e1950ebf2dd9686b9f372b57"
