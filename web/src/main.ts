@@ -238,15 +238,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   L.control.zoom({ position: "topright" }).addTo(map);
 
-  // Stadia "alidade_smooth_dark" — dark theme with prominent motorways and
-  // road labels. Free tier covers localhost + reasonable production traffic;
-  // if you deploy to a non-local domain, register a free API key at
-  // stadiamaps.com and append it as ?api_key=... below.
+  // CARTO "dark_all" — dark basemap with road labels. No API key and no
+  // domain registration required (unlike Stadia Maps, which returns 401 for
+  // any non-localhost origin without auth). Free for reasonable usage; the
+  // {s} subdomains a–d spread tile requests across CARTO's CDN hosts.
   L.tileLayer(
-    "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png",
+    "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
     {
       attribution:
-        '© <a href="https://stadiamaps.com/" target="_blank">Stadia Maps</a> · © <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+        '© <a href="https://carto.com/attributions" target="_blank">CARTO</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+      subdomains: "abcd",
       maxZoom: 20,
       detectRetina: true,
     },

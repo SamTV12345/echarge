@@ -580,6 +580,12 @@ input { font-family: inherit; }
 
 /* Leaflet dark tweaks */
 .leaflet-container { background: #0a0e13; font-family: inherit; }
+/* CARTO's dark_all basemap bakes its street labels in at a very low
+   brightness, which is hard to read on this near-black theme. Lift just the
+   raster tiles so labels/roads pop. Scoped to .leaflet-tile, so the HTML
+   divIcon markers and clusters keep their full-contrast dark styling.
+   Bump the brightness value if labels are still too dim. */
+.leaflet-tile { filter: brightness(1.45) contrast(1.05); }
 .leaflet-control-attribution { background: rgba(17, 22, 29, 0.85) !important; color: var(--fg-3) !important; backdrop-filter: blur(8px); padding: 2px 8px !important; border-radius: 6px 0 0 0 !important; font-size: 10px !important; }
 .leaflet-control-attribution a { color: var(--fg-2) !important; }
 .leaflet-control-zoom { border: none !important; margin: 16px !important; box-shadow: var(--shadow-md) !important; border-radius: 10px !important; overflow: hidden; }
