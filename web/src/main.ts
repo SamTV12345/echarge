@@ -243,7 +243,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // any non-localhost origin without auth). Free for reasonable usage; the
   // {s} subdomains a–d spread tile requests across CARTO's CDN hosts.
   L.tileLayer(
-    "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_3qk7_1_126a519a0277369b814d9f95",
     {
       attribution:
         '© <a href="https://carto.com/attributions" target="_blank">CARTO</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
